@@ -1,22 +1,3 @@
-
-
-Skip to content
-Using Gmail with screen readers
-Enable desktop notifications for Gmail.
-   OK  No thanks
-Your new, simpler toolbar
-Now it’s easier to focus on common tasks. Find other actions under More (⋮)
-2 of 2,113
-deepseek_python_20260114_bbce98.py
-Inbox
-
-Arthur Delight <delightarthur365@gmail.com>
-Attachments
-11:55 AM (21 minutes ago)
-to me
-
- One attachment
-  •  Scanned by Gmail
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -806,5 +787,4 @@ def main():
 # Run the app
 if __name__ == "__main__":
     main()
-deepseek_python_20260114_bbce98.py
-Displaying deepseek_python_20260114_bbce98.py.
+
