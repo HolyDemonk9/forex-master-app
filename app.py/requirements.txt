@@ -1,4 +1,9 @@
 streamlit
 yfinance
-matplotlib
 pandas
+numpy
+ta
+textblob
+plotly
+requests
+beautifulsoup4
