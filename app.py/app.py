@@ -1,3 +1,4 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -11,14 +12,20 @@ from datetime import datetime, timedelta
 import warnings
 from typing import Dict, Tuple, Optional
 import time
+import sys
 warnings.filterwarnings('ignore')
 
-# Page Configuration
-st.set_page_config(
-    page_title="Pro Forex Trading Dashboard",
-    page_icon="📈",
-    layout="wide"
-)
+# ✅ MUST be the FIRST Streamlit command, before any other st. commands
+try:
+    st.set_page_config(
+        page_title="Pro Forex Trading Dashboard",
+        page_icon="📈",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+except Exception as e:
+    # If set_page_config fails, we'll handle it gracefully
+    print(f"Page config warning: {e}")
 
 # Custom CSS for professional styling
 st.markdown("""
@@ -92,11 +99,23 @@ st.markdown("""
         padding: 15px;
         margin: 10px 0;
     }
+    .stButton>button {
+        background: linear-gradient(135deg, #1E88E5, #1565C0);
+        color: white;
+        font-weight: bold;
+        border: none;
+        padding: 10px 24px;
+        border-radius: 8px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Title
 st.markdown('<h1 class="main-header">📊 Algorithmic Forex Trading Dashboard</h1>', unsafe_allow_html=True)
+
+# Initialize session state for caching
+if 'last_success_fetch' not in st.session_state:
+    st.session_state.last_success_fetch = None
 
 # Sidebar Configuration
 with st.sidebar:
@@ -123,7 +142,7 @@ with st.sidebar:
     )
     ticker = assets[selected_asset]
     
-    # Trading mode selection with multi-timeframe info
+    # Trading mode selection
     trading_modes = {
         "Swing Trading": {
             "period": "1y",
@@ -164,7 +183,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Risk Management")
     
-    # Account settings
     account_balance = st.number_input(
         "Account Balance ($)",
         min_value=100.0,
@@ -181,16 +199,13 @@ with st.sidebar:
     
     atr_multiplier_sl = st.slider(
         "Stop Loss (ATR Multiplier)",
-        1.0, 3.0, 1.5, 0.1,
-        help="Stop loss distance in ATR multiples"
+        1.0, 3.0, 1.5, 0.1
     )
     atr_multiplier_tp = st.slider(
         "Take Profit (ATR Multiplier)",
-        1.0, 5.0, 3.0, 0.1,
-        help="Take profit distance in ATR multiples"
+        1.0, 5.0, 3.0, 0.1
     )
     
-    # Trailing stop configuration
     enable_trailing = st.checkbox("Enable Trailing Stop", value=True)
     trailing_atr_multiplier = st.slider(
         "Trailing Stop Distance (ATR)",
@@ -202,14 +217,10 @@ with st.sidebar:
     st.caption("⚠️ Trading involves risk. Past performance ≠ future results")
     st.caption("📊 Data: Yahoo Finance | 🎯 Signals: Algorithmic Analysis")
 
-# Improved fetch_data function with retry logic and caching
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_data(ticker: str, period: str, interval: str, max_retries: int = 3) -> Optional[pd.DataFrame]:
-    """
-    Fetch data with retry logic and error handling
-    """
-    last_success = st.session_state.get('last_success_fetch', None)
-    
+# Improved fetch_data function with better error handling
+@st.cache_data(ttl=60)
+def fetch_data(ticker: str, period: str, interval: str, max_retries: int = 2) -> Optional[pd.DataFrame]:
+    """Fetch data with retry logic and error handling"""
     for attempt in range(max_retries):
         try:
             data = yf.download(
@@ -224,47 +235,39 @@ def fetch_data(ticker: str, period: str, interval: str, max_retries: int = 3) ->
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     continue
-                st.error(f"No data for {ticker}")
                 return None
             
-            # Ensure required columns exist
-            required_cols = ['Open', 'High', 'Low', 'Close']
-            if 'Adj Close' in data.columns:
-                data['Close'] = data['Adj Close']
-            
-            for col in required_cols:
+            # Ensure required columns
+            required = ['Open', 'High', 'Low', 'Close']
+            for col in required:
                 if col not in data.columns:
-                    if col == 'Volume' and 'Volume' not in data.columns:
-                        data['Volume'] = 0
-                    elif col != 'Volume':
-                        data[col] = data['Close']
+                    data[col] = data['Close'] if 'Close' in data.columns else data.iloc[:, -1]
             
-            # Store last successful fetch time
-            st.session_state['last_success_fetch'] = datetime.now()
+            if 'Volume' not in data.columns:
+                data['Volume'] = 0
             
+            st.session_state.last_success_fetch = datetime.now()
             return data
             
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2)
                 continue
-            st.error(f"Data fetch failed after {max_retries} attempts: {str(e)[:100]}")
+            st.error(f"Failed to fetch data after {max_retries} attempts")
             return None
     
     return None
 
 def fetch_higher_timeframe_data(ticker: str, base_interval: str, higher_interval: str) -> Optional[pd.DataFrame]:
-    """
-    Fetch higher timeframe data for trend confirmation
-    """
-    period_map = {
-        '1m': '1d', '5m': '1d', '15m': '5d',
-        '1h': '1mo', '1d': '6mo', '1wk': '2y'
-    }
-    
-    period = period_map.get(higher_interval, '1mo')
-    
+    """Fetch higher timeframe data for trend confirmation"""
     try:
+        period_map = {
+            '1m': '1d', '5m': '1d', '15m': '5d',
+            '1h': '1mo', '1d': '6mo', '1wk': '2y'
+        }
+        
+        period = period_map.get(higher_interval, '1mo')
+        
         data = yf.download(
             tickers=ticker,
             period=period,
@@ -273,398 +276,341 @@ def fetch_higher_timeframe_data(ticker: str, base_interval: str, higher_interval
             timeout=10
         )
         
-        if not data.empty:
-            if 'Adj Close' in data.columns:
-                data['Close'] = data['Adj Close']
+        if not data.empty and 'Close' in data.columns:
             return data
     except:
         pass
     
     return None
 
-def calculate_higher_timeframe_trend(higher_tf_data: pd.DataFrame, mode: str) -> Tuple[str, str]:
-    """
-    Determine trend direction on higher timeframe
-    """
-    if higher_tf_data is None or len(higher_tf_data) < 50:
-        return "NEUTRAL", "Insufficient higher TF data"
+def calculate_higher_timeframe_trend(data: pd.DataFrame) -> Tuple[str, str]:
+    """Determine trend direction on higher timeframe"""
+    if data is None or len(data) < 20:
+        return "NEUTRAL", "Insufficient data"
     
-    df = higher_tf_data.copy()
-    
-    # Calculate trend indicators based on timeframe
-    if mode in ["Swing Trading", "Day Trading"]:
-        df['EMA_20'] = ta.trend.ema_indicator(df['Close'], window=20)
-        df['EMA_50'] = ta.trend.ema_indicator(df['Close'], window=50)
+    try:
+        df = data.copy()
         
+        # Calculate simple moving averages
         if len(df) >= 50:
-            ema20 = df['EMA_20'].iloc[-1]
-            ema50 = df['EMA_50'].iloc[-1]
+            df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
+            df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50)
             
-            if ema20 > ema50 and df['Close'].iloc[-1] > ema20:
-                return "BULLISH", f"Higher TF: EMA20 > EMA50 & Price > EMA20"
-            elif ema20 < ema50 and df['Close'].iloc[-1] < ema20:
-                return "BEARISH", f"Higher TF: EMA20 < EMA50 & Price < EMA20"
-    
-    else:  # For scalping/sniper
-        df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
-        price = df['Close'].iloc[-1]
-        sma20 = df['SMA_20'].iloc[-1]
+            current_price = df['Close'].iloc[-1]
+            sma20 = df['SMA_20'].iloc[-1]
+            sma50 = df['SMA_50'].iloc[-1]
+            
+            if current_price > sma20 > sma50:
+                return "BULLISH", "Price > SMA20 > SMA50"
+            elif current_price < sma20 < sma50:
+                return "BEARISH", "Price < SMA20 < SMA50"
         
-        if price > sma20 * 1.01:
-            return "BULLISH", f"Higher TF: Price > SMA20 (+1%)"
-        elif price < sma20 * 0.99:
-            return "BEARISH", f"Higher TF: Price < SMA20 (-1%)"
-    
-    return "NEUTRAL", "Higher TF: No clear trend"
+        return "NEUTRAL", "No clear trend"
+    except:
+        return "NEUTRAL", "Calculation error"
 
 def calculate_indicators(data: pd.DataFrame, mode: str, higher_tf_data: pd.DataFrame = None) -> Tuple[pd.DataFrame, str, str, list, dict]:
-    """
-    Calculate technical indicators with multi-timeframe confluence
-    """
+    """Calculate technical indicators with multi-timeframe confluence"""
     df = data.copy()
+    
+    # Get higher timeframe trend
+    higher_tf_trend, higher_tf_reason = calculate_higher_timeframe_trend(higher_tf_data)
     
     # Calculate volume metrics
     if 'Volume' in df.columns and len(df) > 20:
         df['Volume_SMA_20'] = ta.trend.sma_indicator(df['Volume'], window=20)
-        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA_20']
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA_20'].replace(0, 1)
     else:
         df['Volume_Ratio'] = 1.0
     
-    # Calculate ATR for volatility
+    # Calculate ATR
     if len(df) > 14:
-        df['ATR'] = ta.volatility.AverageTrueRange(
-            high=df['High'],
-            low=df['Low'],
-            close=df['Close'],
-            window=14
-        ).average_true_range()
+        try:
+            df['ATR'] = ta.volatility.AverageTrueRange(
+                high=df['High'],
+                low=df['Low'],
+                close=df['Close'],
+                window=14
+            ).average_true_range()
+        except:
+            df['ATR'] = df['Close'].rolling(14).std()
     else:
         df['ATR'] = np.nan
     
-    # Get higher timeframe trend
-    higher_tf_trend = "NEUTRAL"
-    higher_tf_reason = "No higher TF data"
-    
-    if higher_tf_data is not None:
-        higher_tf_trend, higher_tf_reason = calculate_higher_timeframe_trend(higher_tf_data, mode)
-    
-    # Calculate mode-specific indicators
-    signal = "NEUTRAL"
-    signal_reason = ""
-    indicators = []
+    # Initialize signal metadata
     signal_metadata = {
         'volume_strong': False,
         'higher_tf_aligned': False,
         'signal_strength': 0
     }
     
-    if mode == "Swing Trading":
-        df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50)
-        df['SMA_200'] = ta.trend.sma_indicator(df['Close'], window=200)
-        indicators = ['SMA_50', 'SMA_200']
-        
-        if len(df) >= 200:
-            sma50 = df['SMA_50'].iloc[-1]
-            sma200 = df['SMA_200'].iloc[-1]
-            
-            # Check volume confirmation
-            volume_strong = df['Volume_Ratio'].iloc[-1] > 1.2 if 'Volume_Ratio' in df.columns else True
-            
-            if sma50 > sma200 and higher_tf_trend == "BULLISH":
-                signal = "BUY"
-                signal_reason = f"Golden Cross + Higher TF Bullish"
-                signal_metadata['higher_tf_aligned'] = True
-                signal_metadata['signal_strength'] = 2 if volume_strong else 1
-            elif sma50 < sma200 and higher_tf_trend == "BEARISH":
-                signal = "SELL"
-                signal_reason = f"Death Cross + Higher TF Bearish"
-                signal_metadata['higher_tf_aligned'] = True
-                signal_metadata['signal_strength'] = 2 if volume_strong else 1
-            else:
-                signal = "NEUTRAL"
-                signal_reason = "No confluence with higher TF"
+    signal = "NEUTRAL"
+    signal_reason = ""
+    indicators = []
     
-    elif mode == "Day Trading":
-        df['EMA_9'] = ta.trend.ema_indicator(df['Close'], window=9)
-        df['EMA_21'] = ta.trend.ema_indicator(df['Close'], window=21)
-        indicators = ['EMA_9', 'EMA_21']
+    try:
+        if mode == "Swing Trading":
+            df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50)
+            df['SMA_200'] = ta.trend.sma_indicator(df['Close'], window=200)
+            indicators = ['SMA_50', 'SMA_200']
+            
+            if len(df) >= 200:
+                volume_strong = df['Volume_Ratio'].iloc[-1] > 1.2
+                signal_metadata['volume_strong'] = volume_strong
+                
+                if df['SMA_50'].iloc[-1] > df['SMA_200'].iloc[-1]:
+                    if higher_tf_trend == "BULLISH":
+                        signal = "BUY"
+                        signal_reason = "Golden Cross + Bullish HTF"
+                        signal_metadata['higher_tf_aligned'] = True
+                        signal_metadata['signal_strength'] = 2 if volume_strong else 1
+                    else:
+                        signal = "BUY"
+                        signal_reason = "Golden Cross (HTF neutral)"
+                        signal_metadata['signal_strength'] = 1
+                else:
+                    if higher_tf_trend == "BEARISH":
+                        signal = "SELL"
+                        signal_reason = "Death Cross + Bearish HTF"
+                        signal_metadata['higher_tf_aligned'] = True
+                        signal_metadata['signal_strength'] = 2 if volume_strong else 1
+                    else:
+                        signal = "NEUTRAL"
+                        signal_reason = "No HTF alignment"
         
-        if len(df) >= 21:
-            ema9 = df['EMA_9'].iloc[-1]
-            ema21 = df['EMA_21'].iloc[-1]
-            prev_ema9 = df['EMA_9'].iloc[-2] if len(df) > 1 else ema9
-            prev_ema21 = df['EMA_21'].iloc[-2] if len(df) > 1 else ema21
+        elif mode == "Day Trading":
+            df['EMA_9'] = ta.trend.ema_indicator(df['Close'], window=9)
+            df['EMA_21'] = ta.trend.ema_indicator(df['Close'], window=21)
+            indicators = ['EMA_9', 'EMA_21']
             
-            # Volume validation
-            volume_strong = df['Volume_Ratio'].iloc[-1] > 1.3 if 'Volume_Ratio' in df.columns else True
-            signal_metadata['volume_strong'] = volume_strong
-            
-            # Check for cross with higher TF alignment
-            bullish_cross = prev_ema9 <= prev_ema21 and ema9 > ema21
-            bearish_cross = prev_ema9 >= prev_ema21 and ema9 < ema21
-            
-            if bullish_cross and higher_tf_trend in ["BULLISH", "NEUTRAL"]:
-                signal = "BUY"
-                strength = "STRONG" if volume_strong and higher_tf_trend == "BULLISH" else "MODERATE"
-                signal_reason = f"{strength}: EMA9↑EMA21"
-                signal_metadata['higher_tf_aligned'] = higher_tf_trend == "BULLISH"
-                signal_metadata['signal_strength'] = 2 if volume_strong and higher_tf_trend == "BULLISH" else 1
-            elif bearish_cross and higher_tf_trend in ["BEARISH", "NEUTRAL"]:
-                signal = "SELL"
-                strength = "STRONG" if volume_strong and higher_tf_trend == "BEARISH" else "MODERATE"
-                signal_reason = f"{strength}: EMA9↓EMA21"
-                signal_metadata['higher_tf_aligned'] = higher_tf_trend == "BEARISH"
-                signal_metadata['signal_strength'] = 2 if volume_strong and higher_tf_trend == "BEARISH" else 1
-            else:
-                signal = "NEUTRAL"
-                signal_reason = "No EMA cross or TF misalignment"
-    
-    elif mode == "Scalping":
-        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
-        indicators = ['RSI']
+            if len(df) >= 21:
+                volume_strong = df['Volume_Ratio'].iloc[-1] > 1.3
+                signal_metadata['volume_strong'] = volume_strong
+                
+                ema9_current = df['EMA_9'].iloc[-1]
+                ema21_current = df['EMA_21'].iloc[-1]
+                
+                if len(df) > 1:
+                    ema9_prev = df['EMA_9'].iloc[-2]
+                    ema21_prev = df['EMA_21'].iloc[-2]
+                    
+                    # Check for bullish cross
+                    if ema9_prev <= ema21_prev and ema9_current > ema21_current:
+                        if higher_tf_trend in ["BULLISH", "NEUTRAL"]:
+                            signal = "BUY"
+                            signal_reason = "EMA9 crossed above EMA21"
+                            signal_metadata['higher_tf_aligned'] = higher_tf_trend == "BULLISH"
+                            signal_metadata['signal_strength'] = 2 if volume_strong and higher_tf_trend == "BULLISH" else 1
+                    
+                    # Check for bearish cross
+                    elif ema9_prev >= ema21_prev and ema9_current < ema21_current:
+                        if higher_tf_trend in ["BEARISH", "NEUTRAL"]:
+                            signal = "SELL"
+                            signal_reason = "EMA9 crossed below EMA21"
+                            signal_metadata['higher_tf_aligned'] = higher_tf_trend == "BEARISH"
+                            signal_metadata['signal_strength'] = 2 if volume_strong and higher_tf_trend == "BEARISH" else 1
         
-        if len(df) >= 14:
-            rsi = df['RSI'].iloc[-1]
-            volume_strong = df['Volume_Ratio'].iloc[-1] > 1.5 if 'Volume_Ratio' in df.columns else True
+        elif mode == "Scalping":
+            df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+            indicators = ['RSI']
             
-            if rsi < 30 and volume_strong and higher_tf_trend != "BEARISH":
-                signal = "BUY"
-                signal_reason = f"RSI Oversold ({rsi:.1f}) + Volume Spike"
-                signal_metadata['higher_tf_aligned'] = higher_tf_trend == "BULLISH"
-                signal_metadata['signal_strength'] = 2 if higher_tf_trend == "BULLISH" else 1
-            elif rsi > 70 and volume_strong and higher_tf_trend != "BULLISH":
-                signal = "SELL"
-                signal_reason = f"RSI Overbought ({rsi:.1f}) + Volume Spike"
-                signal_metadata['higher_tf_aligned'] = higher_tf_trend == "BEARISH"
-                signal_metadata['signal_strength'] = 2 if higher_tf_trend == "BEARISH" else 1
-            else:
-                signal = "NEUTRAL"
-                signal_reason = f"RSI Neutral ({rsi:.1f})"
-    
-    else:  # Sniper Mode
-        bb = ta.volatility.BollingerBands(close=df['Close'], window=20, window_dev=2)
-        df['BB_upper'] = bb.bollinger_hband()
-        df['BB_middle'] = bb.bollinger_mavg()
-        df['BB_lower'] = bb.bollinger_lband()
-        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
-        indicators = ['BB_upper', 'BB_middle', 'BB_lower', 'RSI']
+            if len(df) >= 14:
+                volume_strong = df['Volume_Ratio'].iloc[-1] > 1.5
+                signal_metadata['volume_strong'] = volume_strong
+                current_rsi = df['RSI'].iloc[-1]
+                
+                if current_rsi < 30 and volume_strong:
+                    signal = "BUY"
+                    signal_reason = f"RSI oversold ({current_rsi:.1f})"
+                    signal_metadata['signal_strength'] = 2 if higher_tf_trend != "BEARISH" else 1
+                elif current_rsi > 70 and volume_strong:
+                    signal = "SELL"
+                    signal_reason = f"RSI overbought ({current_rsi:.1f})"
+                    signal_metadata['signal_strength'] = 2 if higher_tf_trend != "BULLISH" else 1
         
-        if len(df) >= 20:
-            price = df['Close'].iloc[-1]
-            bb_lower = df['BB_lower'].iloc[-1]
-            bb_upper = df['BB_upper'].iloc[-1]
-            rsi = df['RSI'].iloc[-1]
+        else:  # Sniper Mode
+            bb = ta.volatility.BollingerBands(close=df['Close'], window=20, window_dev=2)
+            df['BB_upper'] = bb.bollinger_hband()
+            df['BB_middle'] = bb.bollinger_mavg()
+            df['BB_lower'] = bb.bollinger_lband()
+            df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+            indicators = ['BB_upper', 'BB_middle', 'BB_lower', 'RSI']
             
-            volume_strong = df['Volume_Ratio'].iloc[-1] > 1.8 if 'Volume_Ratio' in df.columns else False
-            
-            if price < bb_lower and rsi < 25 and volume_strong:
-                signal = "BUY"
-                signal_reason = f"Sniper: Price<BB Lower & RSI={rsi:.1f}"
-                signal_metadata['signal_strength'] = 3 if volume_strong else 2
-            elif price > bb_upper and rsi > 75 and volume_strong:
-                signal = "SELL"
-                signal_reason = f"Sniper: Price>BB Upper & RSI={rsi:.1f}"
-                signal_metadata['signal_strength'] = 3 if volume_strong else 2
-            else:
-                signal = "NEUTRAL"
-                signal_reason = "No sniper setup"
-    
-    # Add higher TF info to reason
-    if higher_tf_trend != "NEUTRAL" and signal != "NEUTRAL":
-        signal_reason += f" | {higher_tf_reason}"
+            if len(df) >= 20:
+                volume_strong = df['Volume_Ratio'].iloc[-1] > 1.8
+                signal_metadata['volume_strong'] = volume_strong
+                
+                price = df['Close'].iloc[-1]
+                bb_lower = df['BB_lower'].iloc[-1]
+                bb_upper = df['BB_upper'].iloc[-1]
+                rsi = df['RSI'].iloc[-1]
+                
+                if price < bb_lower and rsi < 25 and volume_strong:
+                    signal = "BUY"
+                    signal_reason = f"Price < Lower BB, RSI={rsi:.1f}"
+                    signal_metadata['signal_strength'] = 3
+                elif price > bb_upper and rsi > 75 and volume_strong:
+                    signal = "SELL"
+                    signal_reason = f"Price > Upper BB, RSI={rsi:.1f}"
+                    signal_metadata['signal_strength'] = 3
+    except Exception as e:
+        signal = "NEUTRAL"
+        signal_reason = f"Indicator error: {str(e)[:50]}"
     
     return df, signal, signal_reason, indicators, signal_metadata
 
-# Enhanced sentiment analysis with market keywords
+# Enhanced sentiment analysis
 MARKET_KEYWORDS = {
-    'bullish': 1.5,
-    'bearish': -1.5,
-    'hawkish': -1.2,  # Typically negative for bonds, positive for currency
-    'dovish': 1.2,    # Typically positive for bonds, negative for currency
-    'inflation': -1.0,
-    'deflation': 1.0,
-    'rate hike': -1.3,
-    'rate cut': 1.3,
-    'tightening': -1.1,
-    'easing': 1.1,
-    'strong': 1.2,
-    'weak': -1.2,
-    'growth': 1.0,
-    'recession': -1.5,
-    'risk-on': 1.0,
-    'risk-off': -1.0,
-    'breakout': 1.0,
-    'breakdown': -1.0,
-    'support': 0.5,
-    'resistance': -0.5
+    'bullish': 1.5, 'bearish': -1.5,
+    'hawkish': -1.2, 'dovish': 1.2,
+    'inflation': -1.0, 'deflation': 1.0,
+    'rate hike': -1.3, 'rate cut': 1.3,
+    'strong': 1.2, 'weak': -1.2,
+    'growth': 1.0, 'recession': -1.5
 }
 
 @st.cache_data(ttl=300)
 def get_news_sentiment(ticker_symbol: str) -> Tuple[float, list, str, float]:
-    """
-    Get news sentiment with market keyword weighting
-    """
+    """Get news sentiment with market keyword weighting"""
     try:
-        # Extract asset name
         asset_name = ticker_symbol.split('=')[0] if '=' in ticker_symbol else ticker_symbol.split('-')[0]
         
-        # News sources
-        sources = [
-            f"https://news.google.com/rss/search?q={asset_name}+forex+OR+fx+OR+currency&hl=en-US&gl=US&ceid=US:en",
-            f"https://news.google.com/rss/search?q={asset_name}+Federal+Reserve+OR+ECB+OR+central+bank&hl=en-US&gl=US&ceid=US:en"
-        ]
+        url = f"https://news.google.com/rss/search?q={asset_name}+forex&hl=en-US&gl=US&ceid=US:en"
+        
+        response = requests.get(url, timeout=5)
+        soup = BeautifulSoup(response.content, 'xml')
         
         headlines = []
         weighted_polarities = []
         
-        for url in sources:
-            try:
-                response = requests.get(url, timeout=10)
-                soup = BeautifulSoup(response.content, 'xml')
-                
-                for item in soup.find_all('item')[:15]:
-                    title = item.find('title').text
-                    # Clean title
-                    if ' - ' in title:
-                        title = title.split(' - ')[0]
-                    
-                    # Calculate base polarity
-                    blob = TextBlob(title)
-                    base_polarity = blob.sentiment.polarity
-                    
-                    # Apply market keyword weighting
-                    weighted_polarity = base_polarity
-                    title_lower = title.lower()
-                    
-                    for keyword, weight in MARKET_KEYWORDS.items():
-                        if keyword in title_lower:
-                            weighted_polarity *= weight
-                            break  # Use strongest keyword only
-                    
-                    headlines.append(title)
-                    weighted_polarities.append(weighted_polarity)
-                    
-            except Exception as e:
-                continue
+        for item in soup.find_all('item')[:10]:
+            title = item.find('title').text
+            if ' - ' in title:
+                title = title.split(' - ')[0]
+            
+            # Base polarity
+            blob = TextBlob(title)
+            base_polarity = blob.sentiment.polarity
+            
+            # Apply keyword weighting
+            weighted_polarity = base_polarity
+            title_lower = title.lower()
+            
+            for keyword, weight in MARKET_KEYWORDS.items():
+                if keyword in title_lower:
+                    weighted_polarity *= weight
+                    break
+            
+            headlines.append(title)
+            weighted_polarities.append(weighted_polarity)
         
         if not weighted_polarities:
             return 0.0, ["No news available"], "NEUTRAL", 0.0
         
-        # Calculate statistics
-        avg_weighted_polarity = np.mean(weighted_polarities)
-        avg_base_polarity = np.mean([TextBlob(h).sentiment.polarity for h in headlines[:10]]) if headlines else 0
+        avg_weighted = np.mean(weighted_polarities)
+        avg_base = np.mean([TextBlob(h).sentiment.polarity for h in headlines[:5]]) if headlines else 0
         
-        # Determine sentiment category
-        if avg_weighted_polarity > 0.15:
+        # Determine sentiment
+        if avg_weighted > 0.15:
             sentiment = "STRONGLY POSITIVE"
-        elif avg_weighted_polarity > 0.05:
+        elif avg_weighted > 0.05:
             sentiment = "POSITIVE"
-        elif avg_weighted_polarity < -0.15:
+        elif avg_weighted < -0.15:
             sentiment = "STRONGLY NEGATIVE"
-        elif avg_weighted_polarity < -0.05:
+        elif avg_weighted < -0.05:
             sentiment = "NEGATIVE"
         else:
             sentiment = "NEUTRAL"
         
-        return avg_weighted_polarity, headlines[:8], sentiment, avg_base_polarity
+        return avg_weighted, headlines[:5], sentiment, avg_base
         
     except Exception as e:
-        return 0.0, [f"News error: {str(e)[:50]}"], "NEUTRAL", 0.0
+        return 0.0, [f"News error: {str(e)[:30]}"], "NEUTRAL", 0.0
 
 def calculate_position_size(account_balance: float, risk_percent: float, 
-                          entry_price: float, stop_loss: float, atr: float) -> Dict:
-    """
-    Calculate professional position sizing
-    """
+                          entry_price: float, stop_loss: float) -> Dict:
+    """Calculate professional position sizing"""
     risk_amount = account_balance * (risk_percent / 100)
     
-    # Risk per unit (assuming 1 unit movement = $1 for simplicity)
-    # For forex, this would need pip value calculation
+    # Calculate risk per unit (simplified for demo)
     risk_per_unit = abs(entry_price - stop_loss)
     
     if risk_per_unit > 0:
         position_units = risk_amount / risk_per_unit
+        position_value = position_units * entry_price
+        position_percent = (position_value / account_balance) * 100
     else:
         position_units = 0
-    
-    # Calculate position value
-    position_value = position_units * entry_price
-    
-    # Risk/Reward metrics
-    risk_reward_ratio = 3.0  # Default, would calculate based on TP
+        position_value = 0
+        position_percent = 0
     
     return {
         'risk_amount': risk_amount,
         'position_units': position_units,
         'position_value': position_value,
-        'risk_per_unit': risk_per_unit,
-        'max_position_percent': min(10.0, (position_value / account_balance) * 100)
+        'position_percent': min(position_percent, 10.0),  # Cap at 10%
+        'risk_per_unit': risk_per_unit
     }
 
 def calculate_risk_metrics(current_price: float, atr_value: float, 
                           atr_multiplier_sl: float, atr_multiplier_tp: float,
-                          signal: str, enable_trailing: bool, 
-                          trailing_atr_multiplier: float) -> Dict:
-    """
-    Advanced risk management with trailing stops and breakeven
-    """
-    if pd.isna(atr_value) or atr_value == 0:
-        atr_value = current_price * 0.01  # Default 1% if no ATR
+                          signal: str, enable_trailing: bool = False,
+                          trailing_multiplier: float = 1.0) -> Dict:
+    """Advanced risk management with trailing stops and breakeven"""
+    if pd.isna(atr_value) or atr_value <= 0:
+        atr_value = current_price * 0.01  # Default 1%
     
-    # Calculate stop loss and take profit
+    # Calculate SL and TP
     if signal == "BUY":
         stop_loss = current_price - (atr_value * atr_multiplier_sl)
         take_profit = current_price + (atr_value * atr_multiplier_tp)
-        breakeven_price = current_price + (atr_value * atr_multiplier_sl)
-        trailing_stop = current_price - (atr_value * trailing_atr_multiplier) if enable_trailing else None
+        breakeven = current_price + (atr_value * atr_multiplier_sl)
+        trailing_stop = current_price - (atr_value * trailing_multiplier) if enable_trailing else None
     elif signal == "SELL":
         stop_loss = current_price + (atr_value * atr_multiplier_sl)
         take_profit = current_price - (atr_value * atr_multiplier_tp)
-        breakeven_price = current_price - (atr_value * atr_multiplier_sl)
-        trailing_stop = current_price + (atr_value * trailing_atr_multiplier) if enable_trailing else None
+        breakeven = current_price - (atr_value * atr_multiplier_sl)
+        trailing_stop = current_price + (atr_value * trailing_multiplier) if enable_trailing else None
     else:
         stop_loss = current_price - (atr_value * atr_multiplier_sl)
         take_profit = current_price + (atr_value * atr_multiplier_tp)
-        breakeven_price = current_price
+        breakeven = current_price
         trailing_stop = None
     
     # Calculate distances
-    sl_distance_pips = abs(current_price - stop_loss) * 10000  # Simplified for forex
-    tp_distance_pips = abs(current_price - take_profit) * 10000
-    risk_reward_ratio = tp_distance_pips / sl_distance_pips if sl_distance_pips > 0 else 0
+    sl_distance = abs(current_price - stop_loss)
+    tp_distance = abs(current_price - take_profit)
+    rr_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
     
     return {
         'stop_loss': stop_loss,
         'take_profit': take_profit,
-        'breakeven_price': breakeven_price,
+        'breakeven_price': breakeven,
         'trailing_stop': trailing_stop,
-        'sl_distance': sl_distance_pips,
-        'tp_distance': tp_distance_pips,
-        'risk_reward_ratio': risk_reward_ratio,
-        'atr_value': atr_value
+        'sl_distance': sl_distance,
+        'tp_distance': tp_distance,
+        'risk_reward_ratio': rr_ratio
     }
 
 def generate_decision(technical_signal: str, signal_strength: int, 
                      news_sentiment: str, news_polarity: float,
-                     volume_strong: bool, higher_tf_aligned: bool) -> Tuple[str, str, str]:
-    """
-    Advanced decision engine with weighted scoring
-    """
-    # Technical score (70% weight)
+                     volume_strong: bool, higher_tf_aligned: bool) -> Tuple[str, str, str, float]:
+    """Advanced decision engine with weighted scoring"""
+    # Technical score (70%)
     tech_score = 0
     
     if technical_signal == "BUY":
         tech_score = 70
         if signal_strength == 2:
-            tech_score += 15
+            tech_score += 10
         elif signal_strength == 3:
-            tech_score += 25
+            tech_score += 20
     elif technical_signal == "SELL":
         tech_score = 30
         if signal_strength == 2:
-            tech_score -= 15
+            tech_score -= 10
         elif signal_strength == 3:
-            tech_score -= 25
+            tech_score -= 20
     
     # Volume bonus
     if volume_strong:
@@ -674,21 +620,18 @@ def generate_decision(technical_signal: str, signal_strength: int,
     if higher_tf_aligned:
         tech_score += 15
     
-    # Sentiment score (30% weight)
+    # Sentiment score (30%)
     sentiment_map = {
         "STRONGLY POSITIVE": 30,
-        "POSITIVE": 20,
+        "POSITIVE": 25,
         "NEUTRAL": 15,
         "NEGATIVE": 10,
-        "STRONGLY NEGATIVE": 0
+        "STRONGLY NEGATIVE": 5
     }
     
     sent_score = sentiment_map.get(news_sentiment, 15)
     
-    # Adjust based on polarity magnitude
-    sent_score += news_polarity * 10
-    
-    # Combined score (70% tech, 30% sentiment)
+    # Combined score
     combined_score = (tech_score * 0.7) + (sent_score * 0.3)
     
     # Generate decision
@@ -696,317 +639,309 @@ def generate_decision(technical_signal: str, signal_strength: int,
         if combined_score >= 75:
             decision = "STRONG BUY SIGNAL"
             decision_class = "signal-strong-buy"
-            confidence = "HIGH (90%+)"
+            confidence = "HIGH"
         elif combined_score >= 60:
             decision = "MODERATE BUY SIGNAL"
             decision_class = "signal-moderate-buy"
-            confidence = "MEDIUM (70-89%)"
+            confidence = "MEDIUM"
         else:
             decision = "WEAK BUY / HOLD"
             decision_class = "signal-neutral"
-            confidence = "LOW (<70%)"
+            confidence = "LOW"
     
     elif technical_signal == "SELL":
         if combined_score <= 25:
             decision = "STRONG SELL SIGNAL"
             decision_class = "signal-strong-sell"
-            confidence = "HIGH (90%+)"
+            confidence = "HIGH"
         elif combined_score <= 40:
             decision = "MODERATE SELL SIGNAL"
             decision_class = "signal-moderate-sell"
-            confidence = "MEDIUM (70-89%)"
+            confidence = "MEDIUM"
         else:
             decision = "WEAK SELL / HOLD"
             decision_class = "signal-neutral"
-            confidence = "LOW (<70%)"
+            confidence = "LOW"
     
-    else:  # NEUTRAL
+    else:
         decision = "NO CLEAR SIGNAL - HOLD"
         decision_class = "signal-neutral"
-        confidence = "LOW - WAIT"
+        confidence = "WAIT"
     
     return decision, decision_class, confidence, combined_score
 
+def create_simple_chart(data: pd.DataFrame, mode: str):
+    """Create a simple chart for visualization"""
+    fig = go.Figure()
+    
+    # Add candlestick
+    if len(data) > 0:
+        fig.add_trace(go.Candlestick(
+            x=data.index[-50:],  # Last 50 periods
+            open=data['Open'].iloc[-50:],
+            high=data['High'].iloc[-50:],
+            low=data['Low'].iloc[-50:],
+            close=data['Close'].iloc[-50:],
+            name="Price"
+        ))
+    
+    # Add indicators based on mode
+    if mode == "Swing Trading" and 'SMA_50' in data.columns:
+        fig.add_trace(go.Scatter(
+            x=data.index[-50:],
+            y=data['SMA_50'].iloc[-50:],
+            name="SMA 50",
+            line=dict(color='orange', width=2)
+        ))
+    
+    fig.update_layout(
+        title=f"{selected_asset} - {selected_mode}",
+        template="plotly_white",
+        height=500
+    )
+    
+    return fig
+
 # Main app logic
 def main():
-    # Fetch primary data
-    with st.spinner(f"📊 Fetching {selected_mode} data..."):
-        data = fetch_data(ticker, mode_config['period'], mode_config['interval'])
-    
-    if data is None or data.empty:
-        st.error("❌ Data retrieval failed. Try another asset or check connection.")
-        return
-    
-    # Fetch higher timeframe data for confluence
-    higher_tf_data = None
-    if 'higher_timeframe' in mode_config:
-        higher_tf_data = fetch_higher_timeframe_data(
-            ticker, mode_config['interval'], mode_config['higher_timeframe']
-        )
-    
-    # Calculate indicators
-    data_with_indicators, technical_signal, technical_reason, indicators, signal_metadata = calculate_indicators(
-        data, selected_mode, higher_tf_data
-    )
-    
-    # Get current price and metrics
-    current_price = data_with_indicators['Close'].iloc[-1]
-    previous_price = data_with_indicators['Close'].iloc[-2] if len(data_with_indicators) > 1 else current_price
-    price_change_pct = ((current_price - previous_price) / previous_price) * 100
-    current_atr = data_with_indicators['ATR'].iloc[-1] if 'ATR' in data_with_indicators.columns else 0
-    
-    # Get news sentiment
-    with st.spinner("📰 Analyzing market sentiment..."):
-        news_polarity, news_headlines, news_sentiment, base_polarity = get_news_sentiment(ticker)
-    
-    # Generate trading decision
-    decision, decision_class, confidence, score = generate_decision(
-        technical_signal,
-        signal_metadata['signal_strength'],
-        news_sentiment,
-        news_polarity,
-        signal_metadata['volume_strong'],
-        signal_metadata['higher_tf_aligned']
-    )
-    
-    # Calculate risk metrics
-    risk_metrics = calculate_risk_metrics(
-        current_price, current_atr,
-        atr_multiplier_sl, atr_multiplier_tp,
-        technical_signal, enable_trailing, trailing_atr_multiplier
-    )
-    
-    # Calculate position sizing
-    position_metrics = calculate_position_size(
-        account_balance, risk_per_trade,
-        current_price, risk_metrics['stop_loss'], current_atr
-    )
-    
-    # Display dashboard metrics
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric(
-            label="💰 Current Price",
-            value=f"${current_price:.4f}" if current_price < 100 else f"${current_price:.2f}",
-            delta=f"{price_change_pct:.2f}%",
-            delta_color="normal"
-        )
-        st.caption(f"ATR Volatility: {current_atr:.4f}")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric(
-            label="🎯 Technical Signal",
-            value=technical_signal,
-            delta=technical_reason[:40]
-        )
-        vol_status = "✅ Strong" if signal_metadata['volume_strong'] else "⚠️ Weak"
-        tf_status = "✅ Aligned" if signal_metadata['higher_tf_aligned'] else "⚠️ Neutral"
-        st.caption(f"Volume: {vol_status} | TF: {tf_status}")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric(
-            label="📰 News Sentiment",
-            value=news_sentiment,
-            delta=f"Score: {news_polarity:.3f}"
-        )
-        st.caption(f"Headlines analyzed: {len(news_headlines)}")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric(
-                label="🛑 Stop Loss",
-                value=f"${risk_metrics['stop_loss']:.4f}",
-                delta=f"{(risk_metrics['stop_loss'] - current_price):.4f}"
+    try:
+        # Show loading spinner
+        with st.spinner(f"📊 Loading {selected_asset} data for {selected_mode}..."):
+            # Fetch primary data
+            data = fetch_data(ticker, mode_config['period'], mode_config['interval'])
+            
+            if data is None or data.empty:
+                st.error("❌ Failed to load market data. Please try again or select a different asset.")
+                
+                # Show last successful fetch time if available
+                if st.session_state.last_success_fetch:
+                    st.info(f"Last successful data fetch: {st.session_state.last_success_fetch}")
+                return
+            
+            # Fetch higher timeframe data
+            higher_tf_data = fetch_higher_timeframe_data(
+                ticker, mode_config['interval'], mode_config['higher_timeframe']
             )
-        with col_b:
+        
+        # Calculate indicators
+        data_with_indicators, technical_signal, technical_reason, indicators, signal_metadata = calculate_indicators(
+            data, selected_mode, higher_tf_data
+        )
+        
+        # Get current metrics
+        current_price = data_with_indicators['Close'].iloc[-1]
+        previous_price = data_with_indicators['Close'].iloc[-2] if len(data_with_indicators) > 1 else current_price
+        price_change = ((current_price - previous_price) / previous_price) * 100
+        
+        current_atr = data_with_indicators['ATR'].iloc[-1] if 'ATR' in data_with_indicators.columns else current_price * 0.01
+        
+        # Get news sentiment
+        with st.spinner("📰 Analyzing market sentiment..."):
+            news_polarity, news_headlines, news_sentiment, base_polarity = get_news_sentiment(ticker)
+        
+        # Generate decision
+        decision, decision_class, confidence, score = generate_decision(
+            technical_signal,
+            signal_metadata['signal_strength'],
+            news_sentiment,
+            news_polarity,
+            signal_metadata['volume_strong'],
+            signal_metadata['higher_tf_aligned']
+        )
+        
+        # Calculate risk metrics
+        risk_metrics = calculate_risk_metrics(
+            current_price, current_atr,
+            atr_multiplier_sl, atr_multiplier_tp,
+            technical_signal, enable_trailing, trailing_atr_multiplier
+        )
+        
+        # Calculate position size
+        position_metrics = calculate_position_size(
+            account_balance, risk_per_trade,
+            current_price, risk_metrics['stop_loss']
+        )
+        
+        # Display metrics in columns
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             st.metric(
-                label="🎯 Take Profit",
-                value=f"${risk_metrics['take_profit']:.4f}",
-                delta=f"{(risk_metrics['take_profit'] - current_price):.4f}"
+                label="💰 Current Price",
+                value=f"${current_price:.4f}" if current_price < 100 else f"${current_price:.2f}",
+                delta=f"{price_change:+.2f}%"
             )
-        st.caption(f"R/R Ratio: {risk_metrics['risk_reward_ratio']:.2f}:1")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric(
-            label="📊 Position Sizing",
-            value=f"${position_metrics['position_value']:.0f}",
-            delta=f"{position_metrics['max_position_percent']:.1f}% of account"
-        )
-        st.caption(f"Risk: ${position_metrics['risk_amount']:.0f} ({risk_per_trade}%)")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                label="🎯 Technical Signal",
+                value=technical_signal,
+                delta=technical_reason[:30] + "..." if len(technical_reason) > 30 else technical_reason
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                label="📰 News Sentiment",
+                value=news_sentiment,
+                delta=f"Score: {news_polarity:.3f}"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric(
+                    label="🛑 Stop Loss",
+                    value=f"${risk_metrics['stop_loss']:.4f}",
+                    delta=f"{(risk_metrics['stop_loss'] - current_price):+.4f}"
+                )
+            with col_b:
+                st.metric(
+                    label="🎯 Take Profit",
+                    value=f"${risk_metrics['take_profit']:.4f}",
+                    delta=f"{(risk_metrics['take_profit'] - current_price):+.4f}"
+                )
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                label="📊 Position Size",
+                value=f"${position_metrics['position_value']:.0f}",
+                delta=f"{position_metrics['position_percent']:.1f}% of account"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.metric(
+                label="⚡ Signal Score",
+                value=f"{score:.0f}/100",
+                delta=confidence
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Display decision
+        st.markdown(f'<div class="{decision_class}">', unsafe_allow_html=True)
+        st.markdown(f"## {decision}")
+        st.markdown(f"**Score:** {score:.1f}/100 | **Confidence:** {confidence}")
+        st.markdown(f"**Technical:** {technical_signal} | **Sentiment:** {news_sentiment}")
         st.markdown('</div>', unsafe_allow_html=True)
         
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric(
-            label="⚡ Algorithm Score",
-            value=f"{score:.0f}/100",
-            delta=confidence
-        )
-        st.caption(f"Technical: 70% | Sentiment: 30%")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Display trading decision
-    st.markdown(f'<div class="{decision_class}">', unsafe_allow_html=True)
-    st.markdown(f"## {decision}")
-    st.markdown(f"**Signal Score:** {score:.1f}/100 | **Confidence:** {confidence}")
-    st.markdown(f"**Technical:** {technical_signal} | **Sentiment:** {news_sentiment}")
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Advanced risk metrics
-    with st.expander("🔧 Advanced Risk Metrics", expanded=False):
-        col_r1, col_r2, col_r3 = st.columns(3)
-        with col_r1:
-            st.metric("Break-even Price", f"${risk_metrics['breakeven_price']:.4f}")
-            if risk_metrics['trailing_stop']:
-                st.metric("Trailing Stop", f"${risk_metrics['trailing_stop']:.4f}")
-        with col_r2:
-            st.metric("SL Distance", f"{risk_metrics['sl_distance']:.1f} pips")
-            st.metric("TP Distance", f"{risk_metrics['tp_distance']:.1f} pips")
-        with col_r3:
-            st.metric("Position Units", f"{position_metrics['position_units']:.2f}")
-            st.metric("Risk per Unit", f"${position_metrics['risk_per_unit']:.4f}")
-    
-    st.markdown("---")
-    
-    # Create tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Live Chart", "📊 Market Data", "📰 News Analysis", "⚙️ Trade Setup"])
-    
-    with tab1:
-        # Chart would go here (similar to original but enhanced)
-        st.info("Chart functionality maintained from original code")
+        # Chart tab
+        st.markdown("---")
+        st.subheader("📈 Price Chart")
         
-    with tab2:
-        st.subheader("Market Data & Indicators")
-        if not data_with_indicators.empty:
-            display_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if 'Volume_Ratio' in data_with_indicators.columns:
-                display_cols.append('Volume_Ratio')
+        fig = create_simple_chart(data_with_indicators, selected_mode)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Data and Analysis tabs
+        tab1, tab2, tab3 = st.tabs(["📊 Market Data", "📰 News Analysis", "⚙️ Trade Setup"])
+        
+        with tab1:
+            # Show recent data
+            display_data = data_with_indicators[['Open', 'High', 'Low', 'Close', 'Volume']].tail(10).copy()
             
-            display_data = data_with_indicators[display_cols].tail(20).copy()
+            # Add indicators if available
+            for indicator in indicators:
+                if indicator in data_with_indicators.columns:
+                    display_data[indicator] = data_with_indicators[indicator].tail(10)
             
-            # Format display
-            for col in display_data.columns:
-                if col != 'Volume_Ratio':
-                    display_data[col] = display_data[col].round(4)
-                else:
-                    display_data[col] = display_data[col].round(2)
-            
-            st.dataframe(display_data.style.format("{:.4f}"), use_container_width=True)
+            st.dataframe(display_data.style.format("{:.4f}"))
             
             # Volume analysis
             if 'Volume_Ratio' in data_with_indicators.columns:
-                current_vol_ratio = data_with_indicators['Volume_Ratio'].iloc[-1]
-                st.progress(min(current_vol_ratio / 2.0, 1.0), 
-                           text=f"Volume Ratio: {current_vol_ratio:.2f}x average")
-    
-    with tab3:
-        st.subheader("Market Sentiment Analysis")
+                current_volume_ratio = data_with_indicators['Volume_Ratio'].iloc[-1]
+                st.progress(
+                    min(current_volume_ratio / 2.0, 1.0),
+                    text=f"Volume Ratio: {current_volume_ratio:.2f}x average"
+                )
         
-        col_n1, col_n2 = st.columns(2)
-        with col_n1:
-            st.metric("Weighted Sentiment", f"{news_polarity:.3f}", 
-                     delta=f"Base: {base_polarity:.3f}")
-            st.metric("Market Keywords", "Applied", 
-                     delta=f"{len(MARKET_KEYWORDS)} keywords")
-        
-        with col_n2:
-            # Sentiment gauge
-            sentiment_value = min(max(news_polarity * 3 + 0.5, 0), 1)
-            st.progress(sentiment_value, 
-                       text=f"Sentiment: {news_sentiment}")
-            
-            if news_polarity > 0.1:
-                st.success("✅ Bullish market sentiment detected")
-            elif news_polarity < -0.1:
-                st.error("⚠️ Bearish market sentiment detected")
+        with tab2:
+            if news_headlines:
+                st.subheader("Recent Market News")
+                for i, headline in enumerate(news_headlines[:5], 1):
+                    blob = TextBlob(headline)
+                    polarity = blob.sentiment.polarity
+                    
+                    # Determine sentiment color
+                    if polarity > 0.1:
+                        icon = "🟢"
+                    elif polarity < -0.1:
+                        icon = "🔴"
+                    else:
+                        icon = "⚪"
+                    
+                    st.write(f"{icon} **{headline}**")
+                    st.caption(f"Sentiment: {polarity:.3f}")
+                    st.divider()
             else:
-                st.info("⚪ Neutral market sentiment")
+                st.info("No news headlines available for this asset.")
         
-        st.subheader("Recent Headlines")
-        for i, headline in enumerate(news_headlines[:6], 1):
-            blob = TextBlob(headline)
-            polarity = blob.sentiment.polarity
+        with tab3:
+            col_t1, col_t2 = st.columns(2)
             
-            # Apply keyword weighting
-            weighted_polarity = polarity
-            for keyword in MARKET_KEYWORDS:
-                if keyword in headline.lower():
-                    weighted_polarity *= MARKET_KEYWORDS[keyword]
-                    break
+            with col_t1:
+                st.markdown("#### 📊 Technical Setup")
+                st.write(f"**Signal:** {technical_signal}")
+                st.write(f"**Strength:** {signal_metadata['signal_strength']}/3")
+                st.write(f"**Volume Confirmation:** {'✅ Strong' if signal_metadata['volume_strong'] else '⚠️ Weak'}")
+                st.write(f"**Higher TF Alignment:** {'✅ Yes' if signal_metadata['higher_tf_aligned'] else '⚠️ No'}")
+                
+                # ATR info
+                if current_atr > 0:
+                    atr_percent = (current_atr / current_price) * 100
+                    st.write(f"**ATR Volatility:** {atr_percent:.2f}%")
             
-            # Display
-            col_h1, col_h2 = st.columns([4, 1])
-            with col_h1:
-                st.write(f"{i}. {headline}")
-            with col_h2:
-                st.caption(f"{weighted_polarity:.3f}")
-            st.divider()
-    
-    with tab4:
-        st.subheader("Complete Trade Setup")
-        
-        col_s1, col_s2 = st.columns(2)
-        
-        with col_s1:
-            st.markdown("#### 📊 Technical Analysis")
-            st.write(f"**Primary Signal:** {technical_signal}")
-            st.write(f"**Signal Strength:** {signal_metadata['signal_strength']}/3")
-            st.write(f"**Higher TF Alignment:** {'✅ Yes' if signal_metadata['higher_tf_aligned'] else '⚠️ No'}")
-            st.write(f"**Volume Confirmation:** {'✅ Strong' if signal_metadata['volume_strong'] else '⚠️ Weak'}")
-            st.write(f"**Price Trend:** {'📈 Bullish' if price_change_pct > 0 else '📉 Bearish' if price_change_pct < 0 else '➖ Neutral'}")
+            with col_t2:
+                st.markdown("#### 💼 Risk Management")
+                st.write(f"**Account Balance:** ${account_balance:,.2f}")
+                st.write(f"**Risk Amount:** ${position_metrics['risk_amount']:.2f} ({risk_per_trade}%)")
+                st.write(f"**Stop Loss:** ${risk_metrics['stop_loss']:.4f}")
+                st.write(f"**Take Profit:** ${risk_metrics['take_profit']:.4f}")
+                
+                if risk_metrics['trailing_stop']:
+                    st.write(f"**Trailing Stop:** ${risk_metrics['trailing_stop']:.4f}")
+                
+                st.write(f"**Risk/Reward:** {risk_metrics['risk_reward_ratio']:.2f}:1")
             
-            # ATR analysis
-            if current_atr > 0:
-                atr_percent = (current_atr / current_price) * 100
-                st.write(f"**ATR Volatility:** {atr_percent:.2f}%")
-                if atr_percent > 1.0:
-                    st.warning("⚠️ High volatility - wider stops recommended")
-        
-        with col_s2:
-            st.markdown("#### 💼 Position Management")
-            st.write(f"**Account Balance:** ${account_balance:,.2f}")
-            st.write(f"**Risk per Trade:** ${position_metrics['risk_amount']:.2f} ({risk_per_trade}%)")
-            st.write(f"**Position Size:** ${position_metrics['position_value']:.2f}")
-            st.write(f"**Max Position:** {position_metrics['max_position_percent']:.1f}% of account")
+            # Trading checklist
+            st.markdown("---")
+            st.subheader("✅ Trading Checklist")
             
-            # Risk metrics
-            st.write(f"**Stop Loss:** ${risk_metrics['stop_loss']:.4f}")
-            st.write(f"**Take Profit:** ${risk_metrics['take_profit']:.4f}")
-            if risk_metrics['trailing_stop']:
-                st.write(f"**Trailing Stop:** ${risk_metrics['trailing_stop']:.4f}")
-            st.write(f"**Risk/Reward:** {risk_metrics['risk_reward_ratio']:.2f}:1")
+            check1, check2, check3 = st.columns(3)
+            
+            with check1:
+                st.checkbox("Signal strength ≥ 2", value=signal_metadata['signal_strength'] >= 2)
+                st.checkbox("Volume confirmation", value=signal_metadata['volume_strong'])
+            
+            with check2:
+                st.checkbox("R/R ratio > 1.5", value=risk_metrics['risk_reward_ratio'] > 1.5)
+                st.checkbox("Position < 10%", value=position_metrics['position_percent'] < 10)
+            
+            with check3:
+                st.checkbox("HTF alignment", value=signal_metadata['higher_tf_aligned'])
+                st.checkbox("Sentiment agrees", value=not (
+                    (technical_signal == "BUY" and news_sentiment in ["NEGATIVE", "STRONGLY NEGATIVE"]) or
+                    (technical_signal == "SELL" and news_sentiment in ["POSITIVE", "STRONGLY POSITIVE"])
+                ))
         
-        # Trading checklist
+        # Footer disclaimer
         st.markdown("---")
-        st.subheader("✅ Pre-Trade Checklist")
-        
-        checklist_cols = st.columns(3)
-        with checklist_cols[0]:
-            st.checkbox("Higher TF alignment", value=signal_metadata['higher_tf_aligned'])
-            st.checkbox("Volume confirmation", value=signal_metadata['volume_strong'])
-        with checklist_cols[1]:
-            st.checkbox("Sentiment agrees", value=news_sentiment in ["POSITIVE", "STRONGLY POSITIVE"] if technical_signal == "BUY" else True)
-            st.checkbox("Risk/Reward > 1.5", value=risk_metrics['risk_reward_ratio'] > 1.5)
-        with checklist_cols[2]:
-            st.checkbox("Position size < 10%", value=position_metrics['max_position_percent'] < 10)
-            st.checkbox("Volatility acceptable", value=current_atr/current_price < 0.02)
-        
-        # Final warning
         st.markdown("""
         <div class="risk-warning">
-        ⚠️ **RISK DISCLAIMER:** This algorithmic dashboard is for educational purposes only. 
+        ⚠️ **RISK DISCLAIMER:** This dashboard is for educational purposes only. 
         Forex trading involves substantial risk of loss. Past performance does not guarantee future results. 
         Always trade with capital you can afford to lose and consider consulting a financial advisor.
         </div>
         """, unsafe_allow_html=True)
+        
+    except Exception as e:
+        st.error(f"❌ An error occurred: {str(e)}")
+        st.info("Please try refreshing the page or selecting different parameters.")
 
 # Run the app
 if __name__ == "__main__":
